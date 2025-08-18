@@ -4,7 +4,7 @@ import {
 } from 'obsidian';
 import * as YAML from 'js-yaml';
 
-// 언어 코드와 라벨
+// Language codes and labels
 type TagLang = { code: string; max: number };
 
 const TAG_LANG_LABELS: Record<string, string> = {
@@ -28,7 +28,6 @@ interface FMSettings {
   tagLangs: TagLang[];
 }
 
-// DEFAULT_SETTINGS 교체
 const DEFAULT_SETTINGS: FMSettings = {
   apiKey: '',
   apiBase: 'https://api.openai.com/v1',
@@ -42,99 +41,99 @@ export default class FrontmatterAutomation extends Plugin {
   async onload() {
     await this.loadSettings();
 
-    // 리본 버튼
-    this.addRibbonIcon('wand-2', 'Frontmatter: 현재 노트 갱신', async () => {
+    // Ribbon button
+    this.addRibbonIcon('wand-2', 'Frontmatter: Update current note', async () => {
       await this.processCurrentNote();
     });
 
-    // 커맨드 - 현재 노트
+    // Command - Update Current Note
     this.addCommand({
       id: 'fm-update-current-note',
-      name: 'Frontmatter: 현재 노트 갱신',
+      name: 'Frontmatter: Update current note',
       callback: async () => this.processCurrentNote(),
     });
 
-    // 설정 탭
+    // Settings Tab
     this.addSettingTab(new FMSettingTab(this.app, this));
   }
 
   onunload() {}
 
-  // === 핵심 로직들 ===
+  // === Core logic ===
   private async processCurrentNote() {
     const file = this.app.workspace.getActiveFile();
-    if (!file) return new Notice('활성 노트가 없습니다.');
+    if (!file) return new Notice('No active note.');
     await this.updateFrontmatterForFile(file);
   }
 
   private async updateFrontmatterForFile(file: TFile) {
-    // 원본 읽기 및 프론트매터/본문 분리
+    // Read original file and split frontmatter/body
     const raw = await this.app.vault.read(file);
     const { frontmatter, body } = this.splitFrontmatter(raw);
 
-    // ✅ 본문에서 인라인 태그 추출 & 본문에서 제거
+    // Extract inline tags from body & remove them
     const { inlineTags, strippedBody } = extractInlineTagsAndStrip(body);
 
-    // AI 프롬프트 생성 — JSON 방식
+    // AI prompt generation — JSON format
     const jsonPrompt = this.buildJsonPrompt({
       path: file.path,
       body: strippedBody,
       existingFM: frontmatter,
     });
 
-    // AI 호출(JSON)
+    // AI call (JSON)
     const obj = await this.callAIForJSON(jsonPrompt);
     if (!obj || typeof obj !== 'object') {
-      new Notice(`AI로부터 JSON을 받지 못했습니다: ${file.path}`);
+      new Notice(`Did not receive JSON from AI: ${file.path}`);
       return;
     }
 
-    // 기대 스키마: { title, summary, tags_by_lang: { <code>: string[] } }
+    // Expected schema: { title, summary, tags_by_lang: { <code>: string[] } }
     const tagsByLang: Record<string, string[]> = obj.tags_by_lang ?? {};
     const aiFlatTags = Object.values(tagsByLang).flat().filter(Boolean);
 
-    // ✅ 기존(FM) + 인라인 + AI 태그를 "단순 합치고" 중복 제거(케이스 보존)
+    // Merge existing (FM), inline, and AI tags, removing duplicates (case preserved)
     const chosen = new Map<string, string>();
 
     const addKeepCase = (arr: any[]) => {
       for (const t of arr) {
-        const raw = formatExistingTag(String(t ?? '')); // 케이스 보존 + 최소 정리
-        const k = tagKey(raw);                          // 케이스 무시 키
+        const raw = formatExistingTag(String(t ?? ''));
+        const k = tagKey(raw);
         if (k && !chosen.has(k)) chosen.set(k, raw);
       }
     };
     const addAi = (arr: any[]) => {
       for (const t of arr) {
-        const raw = formatAiTag(String(t ?? ''));       // 케이스 보존 + 최소 정리
+        const raw = formatAiTag(String(t ?? ''));
         const k = tagKey(raw);
         if (k && !chosen.has(k)) chosen.set(k, raw);
       }
     };
 
-    addKeepCase(inlineTags);                 // 인라인 우선
-    addKeepCase(asArray(frontmatter?.tags)); // 그 다음 기존 FM
-    addAi(aiFlatTags);                       // 마지막 AI
+    addKeepCase(inlineTags);                 // Inline first
+    addKeepCase(asArray(frontmatter?.tags)); // Then existing FM
+    addAi(aiFlatTags);                       // Last AI
 
     const finalTags = Array.from(chosen.values());
 
-    // ✅ AI 생성 필드 구성 (tags는 merge 후 우리가 덮어씀)
+    // Compose AI-generated fields (tags are merged and overwritten)
     const generated = {
       title: obj.title ?? '',
       summary: obj.summary ?? '',
     } as Record<string, any>;
 
-    // 기존 FM + AI 생성 FM 병합
+    // Merge existing (FM) + AI-generated FM
     const merged = this.mergeFrontmatter(frontmatter, generated);
 
-    // 🔒 최종 태그를 케이스 보존 상태로 덮어쓰기
+    // Final tags overwrite with case preserved
     (merged as any).tags = finalTags;
 
-    // ✅ 불필요/금지 필드 제거
+    // Remove unnecessary/forbidden fields
     delete (merged as any).updated;
     delete (merged as any).last_modified;
     delete (merged as any).path;
 
-    // ✅ created: 없으면 파일 생성/수정 시각 기반으로 채움, 문자열이면 YYYY-MM-DD 로 정규화
+    // created: if missing, fill with file creation/modification timestamp; if string, normalize to YYYY-MM-DD
     if (!('created' in merged) || !merged.created) {
       const stat = file.stat;
       const baseTs = stat?.ctime ?? stat?.mtime ?? Date.now();
@@ -144,26 +143,26 @@ export default class FrontmatterAutomation extends Plugin {
       if (!isNaN(dt.getTime())) (merged as any).created = formatYYYYMMDDLocal(dt);
     }
 
-    // ✅ fm_created: 항상 오늘 날짜(로컬)로 기록
+    // fm_created: always record today's date (local)
     (merged as any).fm_created = formatYYYYMMDDLocal(Date.now());
 
-    // 파일에 다시 쓰기 — 본문은 태그 제거된 버전 사용
+    // Write back to file — use body with tags removed
     const newRaw = this.composeWithFrontmatter(merged, strippedBody);
     await this.app.vault.modify(file, newRaw);
-    new Notice(`Frontmatter 업데이트 완료: ${file.path}`);
+    new Notice(`Frontmatter updated: ${file.path}`);
   }
 
 
 
 
 
-  // === 프롬프트 생성 ===
+  // === Prompt generation ===
   private buildPrompt(args: { path: string; body: string; existingFM: Record<string, any> | null }) {
     const { path, body, existingFM } = args;
     const cleanBody = sanitizeBodyForLLM(body, 40000, true);
-    const existingYaml = existingFM ? YAML.dump(existingFM).trim() : '(없음)';
+    const existingYaml = existingFM ? YAML.dump(existingFM).trim() : '(none)';
 
-    // 언어/개수 규칙 문자열 생성 (예: "English:3, 한국어:3")
+    // Rules string for language/number (e.g., "English:3, 한국어:3")
     const langRule = (this.settings.tagLangs?.length ? this.settings.tagLangs : [{ code: 'en', max: 5 }])
       .map(x => `${TAG_LANG_LABELS[x.code] ?? x.code}:${x.max}`)
       .join(', ');
@@ -181,7 +180,7 @@ export default class FrontmatterAutomation extends Plugin {
       - Generate **exactly** that many tags per language (no fewer/no more).
       - Tags are keyphrases of 1-2 words, ideally 1.
       - Lowercase; spaces → hyphens; no "#".
-      - Examples: "us-history", "government", "역사", "정부".
+      - Examples: "us-history", "government", "history", "government".
 
     Reference (do NOT include as fields):
     - File path: "${path}"
@@ -195,13 +194,13 @@ export default class FrontmatterAutomation extends Plugin {
 
   }
 
-  // === JSON 프롬프트 생성(권장 경로) ===
+  // === JSON prompt generation (recommended path) ===
   private buildJsonPrompt(args: { path: string; body: string; existingFM: Record<string, any> | null }) {
     const { path, body, existingFM } = args;
     const cleanBody = sanitizeBodyForLLM(body, 40000, true);
-    const existingYaml = existingFM ? YAML.dump(existingFM).trim() : '(없음)';
+    const existingYaml = existingFM ? YAML.dump(existingFM).trim() : '(none)';
 
-    // { "en":5, "ko":5, ... } 형태의 맵 + 설명문 생성
+    // { "en":5, "ko":5, ... } map + description
     const quotas = new Map(this.settings.tagLangs.map(x => [x.code, x.max]));
     const langSpecLines: string[] = [];
     for (const [code, max] of quotas) {
@@ -214,12 +213,11 @@ export default class FrontmatterAutomation extends Plugin {
       } else if (code === 'zh') {
         langSpecLines.push(`- "${code}": exactly ${max} tags; MUST contain CJK ideographs (Chinese Han).`);
       } else {
-        // 라틴계 언어 등: 너무 빡세게 제한하지 않고 “그 언어 단어” 지시만
         langSpecLines.push(`- "${code}": exactly ${max} tags; MUST be ${TAG_LANG_LABELS[code] ?? code} words.`);
       }
     }
 
-    // tags_by_lang 키를 명시적으로 나열 (형식 고정)
+    // Explicitly list tags_by_lang keys (fixed format)
     const tagsObjShape = [...quotas.entries()]
       .map(([code, max]) => `  "${code}": string[${max}]`)
       .join(",\n");
@@ -256,10 +254,10 @@ export default class FrontmatterAutomation extends Plugin {
 
 
 
-  // === OpenAI-호환 엔드포인트 호출 (JSON 전용) ===
+  // === OpenAI-compatible endpoint call (JSON only) ===
   private async callAIForJSON(prompt: string): Promise<any | null> {
     if (!this.settings.apiKey) {
-      new Notice('API Key가 설정되지 않았습니다. 플러그인 설정에서 입력하세요.');
+      new Notice('API key not set. Please enter it in plugin settings.');
       return null;
     }
 
@@ -271,7 +269,7 @@ export default class FrontmatterAutomation extends Plugin {
         { role: 'user', content: prompt },
       ],
       temperature: 0.2,
-      // OpenAI 호환 엔드포인트에서 JSON 강제 (미지원 환경이면 제거하세요)
+      // Force JSON response format (remove if unsupported)
       response_format: { type: "json_object" },
     };
 
@@ -286,8 +284,8 @@ export default class FrontmatterAutomation extends Plugin {
 
     if (!res.ok) {
       const t = await res.text();
-      console.error('AI 호출 실패(OpenAI/JSON):', res.status, t);
-      new Notice(`AI 호출 실패(OpenAI): ${res.status}`);
+      console.error('AI call failed (OpenAI/JSON):', res.status, t);
+      new Notice(`AI call failed (OpenAI): ${res.status}`);
       return null;
     }
 
@@ -298,8 +296,8 @@ export default class FrontmatterAutomation extends Plugin {
     try {
       return JSON.parse(text);
     } catch (e) {
-      console.error('JSON 파싱 실패:', e, '원본:', text);
-      new Notice('AI JSON 응답 파싱 실패');
+      console.error('JSON parse failed:', e, 'original:', text);
+      new Notice('Failed to parse AI JSON response');
       return null;
     }
   }
@@ -324,10 +322,11 @@ export default class FrontmatterAutomation extends Plugin {
     return `---\n${yaml}\n---\n\n${body}`;
   }
 
+  //  Merge existing frontmatter with generated fields. For tags, merge arrays and dedupe.
   private mergeFrontmatter(oldFM: Record<string, any> | null, genFM: Record<string, any>) {
     const out: Record<string, any> = { ...(oldFM ?? {}) };
 
-    // 무조건 덮어쓰기 + tags는 병합
+    // Always overwrite + tags merged
     for (const [k, v] of Object.entries(genFM)) {
       if (k === 'tags') {
         out[k] = uniqArray([...(asArray(out[k])), ...(asArray(v))]);
@@ -336,7 +335,7 @@ export default class FrontmatterAutomation extends Plugin {
       }
     }
 
-    // 태그 정리
+    // Tag cleanup
     if (out.tags) {
       out.tags = asArray(out.tags)
         .map((t: any) => String(t ?? '').trim())
@@ -357,34 +356,30 @@ export default class FrontmatterAutomation extends Plugin {
   }
 }
 
-// === 유틸 ===
-// LLM에 보내기 전 본문 정리:
-// - 이미지 임베드 제거: ![alt](url), ![[file.jpg]], <img ...>
-// - data URI(매우 김) 제거
-// - 코드블록(optional) 축약
-// - 길이 상한 적용
+// === Utils ===
+// Prepare body for LLM:
 function sanitizeBodyForLLM(
   body: string,
-  maxChars = 40000,            // 필요하면 조절
+  maxChars = 40000,
   collapseCodeBlocks = true
 ) {
   let s = body;
 
-  // 1) data URI 이미지 제거
+  // - Remove image embeds: ![alt](url), ![[file.jpg]], <img ...>
   s = s.replace(/!\[[^\]]*]\(\s*data:image\/[^)]+\)/gi, '');  // ![](data:image...)
   s = s.replace(/<img[^>]+src\s*=\s*["']data:image\/[^"']+["'][^>]*>/gi, ''); // <img src="data:...">
 
-  // 2) 일반 이미지 마크다운/위키링크/HTML 제거
+  // - Remove data URI (very long)
   s = s.replace(/!\[[^\]]*]\(\s*[^)]+\)/g, '');         // ![alt](http.../file.png)
   s = s.replace(/!\[\[[^\]]+]]/g, '');                  // ![[file.png]]
   s = s.replace(/<img[^>]*>/gi, '');                    // <img ...>
 
-  // 3) 코드블록 축약 (선택)
+  // - Optionally collapse code blocks
   if (collapseCodeBlocks) {
     s = s.replace(/```[\s\S]*?```/g, '[code omitted]');
   }
 
-  // 4) 길이 제한
+  // - Apply length limit
   if (s.length > maxChars) {
     s = s.slice(0, maxChars) + '\n\n[... truncated for LLM ...]';
   }
@@ -392,68 +387,19 @@ function sanitizeBodyForLLM(
   return s;
 }
 
-/** 태그 문자열의 공통 정리(언어별 규칙 적용, 케이스 보존) */
+/** Common tag string cleanup (apply language-specific rules, preserve case) */
 function cleanupBare(s: string) {
   const base = String(s ?? '').trim().replace(/^#/, '');
-  // 순환 방지를 위해 이 자리에서만 간단 감지
+  // Simple cycle detection to prevent infinite recursion
   const isKorean  = /[\uAC00-\uD7AF]/.test(base);
   const isEnglish = /^[A-Za-z0-9 _/\-]+$/.test(base) && /[A-Za-z]/.test(base);
 
   if (isKorean || isEnglish) {
-    // ✅ ko/en: 붙여쓰기 (하이픈 포함 모든 구분자 제거)
+    // ko/en: concatenate words (remove all separators, keep case)
     return base.replace(/[ _/\-]+/g, '');
   }
 
-  // ✅ 기타: 기존처럼 하이픈 스타일
-  return base
-    .replace(/[ _/]+/g, '-')   // 공백·언더스코어·슬래시 -> '-'
-    .replace(/-{2,}/g, '-')    // 연속 '-' 정리
-    .replace(/^-+|-+$/g, '');  // 앞뒤 '-' 제거
-}
-
-
-
-/** 중복 판별용 key (케이스 무시) */
-function tagKey(s: string) {
-  return cleanupBare(s).toLowerCase();
-}
-
-// 영어 토큰들을 PascalCase로 결합 (약어/숫자는 원형 유지, 이미 Camel/Pascal이면 보존)
-function toPascalCaseEnglish(base: string) {
-  // 우선 공백/언더스코어/슬래시/하이픈으로 토큰화
-  const splitTokens = base.split(/[ _/\-]+/).filter(Boolean);
-  const tokens = splitTokens.length > 0 ? splitTokens : [base];
-
-  return tokens
-    .map(tok => {
-      // 약어(전부 대문자)나 숫자 시작 토큰은 보존
-      if (/^[A-Z0-9]+$/.test(tok)) return tok;
-      if (/^\d/.test(tok)) return tok;
-      // 이미 내부에 대문자가 섞여 있으면 (Camel/Pascal) 원형 보존
-      if (/[A-Z].*[a-z]|[a-z].*[A-Z]/.test(tok)) {
-        return tok.charAt(0).toUpperCase() + tok.slice(1); // 맨 앞만 보정
-      }
-      // 일반 소문자/대문자 혼합 아닌 경우: 첫 글자만 대문자
-      return tok.charAt(0).toUpperCase() + tok.slice(1).toLowerCase();
-    })
-    .join('');
-}
-
-/** AI 태그용 포맷: ko는 붙여쓰기, en은 PascalCase, 그 외는 기존 규칙 */
-function formatAiTag(s: string) {
-  const base = String(s ?? '').trim().replace(/^#/, '');
-  const isKorean  = /[\uAC00-\uD7AF]/.test(base);
-  const isEnglish = /^[A-Za-z0-9 _/\-]+$/.test(base) && /[A-Za-z]/.test(base);
-
-  if (isKorean) {
-    // ko: 붙여쓰기
-    return base.replace(/[ _/\-]+/g, '');
-  }
-  if (isEnglish) {
-    // en: 단어 경계를 보존해 받은 뒤 PascalCase로 결합
-    return toPascalCaseEnglish(base);
-  }
-  // 기타 언어: 기존 하이픈 스타일 유지
+  // Others: keep hyphen style
   return base
     .replace(/[ _/]+/g, '-')
     .replace(/-{2,}/g, '-')
@@ -461,37 +407,85 @@ function formatAiTag(s: string) {
 }
 
 
-/** 기존/인라인 태그 포맷: 규칙 정리만, 케이스 보존 */
+/** Key for duplicate detection (case-insensitive) */
+function tagKey(s: string) {
+  return cleanupBare(s).toLowerCase();
+}
+
+
+function toPascalCaseEnglish(base: string) {
+  //  Convert English-like tokens to PascalCase for AI-generated tags when desired.
+  const splitTokens = base.split(/[ _/\-]+/).filter(Boolean);
+  const tokens = splitTokens.length > 0 ? splitTokens : [base];
+
+  return tokens
+    .map(tok => {
+      
+      if (/^[A-Z0-9]+$/.test(tok)) return tok;
+      if (/^\d/.test(tok)) return tok;
+      
+      if (/[A-Z].*[a-z]|[a-z].*[A-Z]/.test(tok)) {
+        return tok.charAt(0).toUpperCase() + tok.slice(1);
+      }
+      
+      return tok.charAt(0).toUpperCase() + tok.slice(1).toLowerCase();
+    })
+    .join('');
+}
+
+
+function formatAiTag(s: string) {
+  //  Apply formatting rules for tags that originate from AI output.
+  //  Korean tags are concatenated; English tags are PascalCased; others use hyphens.
+  const base = String(s ?? '').trim().replace(/^#/, '');
+  const isKorean  = /[\uAC00-\uD7AF]/.test(base);
+  const isEnglish = /^[A-Za-z0-9 _/\-]+$/.test(base) && /[A-Za-z]/.test(base);
+
+  if (isKorean) {
+    return base.replace(/[ _/\-]+/g, '');
+  }
+  if (isEnglish) {
+    return toPascalCaseEnglish(base);
+  }
+  
+  return base
+    .replace(/[ _/]+/g, '-')
+    .replace(/-{2,}/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+
 function formatExistingTag(s: string) {
+  //  Apply conservative cleanup to user-provided or existing tags (preserve case for many languages).
   return cleanupBare(s);
 }
 
-/** (호환용) 과거 normalizeTag 호출이 남아있을 수 있으니 alias */
 function normalizeTag(s: string) {
+  //  Alias for cleanupBare; retains the same behavior.
   return cleanupBare(s);
 }
 
 function isEnglishTag(tag: string) {
+  //  Heuristic check whether a tag is "English-like" (ASCII letters/numbers with separators).
   const s = String(tag).trim();
-  // 공백/언더스코어/슬래시를 하이픈으로만 바꿔서 검사 (cleanupBare/태그키 미사용)
   const normalized = s.replace(/[ _/]+/g, '-');
   return /^[A-Za-z0-9-]+$/.test(normalized);
 }
 
 function hasKorean(tag: string) {
+  //  Simple detection for Hangul characters.
   return /[\uAC00-\uD7AF]/.test(tag);
 }
 function detectTagLang(tag: string): string {
+  //  Detect language code for a tag: 'ko' for Korean, 'en' for English-like, otherwise 'other'.
   const s = String(tag).trim();
   if (/[\uAC00-\uD7AF]/.test(s)) return 'ko';
   if (isEnglishTag(s)) return 'en';
   return 'other';
 }
 
-/** 언어별 상한 적용: 설정에 없는 언어는 버림, 같은 언어는 limit 초과분 잘라냄
- *  (지금은 사용 안 할 수도 있지만, 호환을 위해 유지)
- */
 function enforceTagQuotas(allTags: string[], tagLangs: Array<{code:string; max:number}>) {
+  //  Pick tags while respecting per-language quotas. Uses normalized form for uniqueness.
   const clean = Array.from(new Set(allTags.map(t => formatExistingTag(t)).filter(Boolean)));
   const allowed = new Map(tagLangs.map(x => [x.code, x.max]));
   const picked: string[] = [];
@@ -511,6 +505,7 @@ function enforceTagQuotas(allTags: string[], tagLangs: Array<{code:string; max:n
 }
 
 function formatYYYYMMDDLocal(ts: number | Date) {
+  //  Format a timestamp as YYYY-MM-DD using local date values.
   const d = ts instanceof Date ? ts : new Date(ts);
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
@@ -519,65 +514,67 @@ function formatYYYYMMDDLocal(ts: number | Date) {
 }
 
 function safeLoadYaml(y: string): any {
+  //  Load YAML safely, returning null on parse errors.
   try { return YAML.load(y); } catch { return null; }
 }
 function stripCodeFences(s: string) {
+  //  Helper to remove code fence markers.
   return s.replace(/^```[a-zA-Z]*\n?/, '').replace(/\n?```$/, '');
 }
 function asArray(v: any): any[] {
+  //  Ensure value is always returned as an array (empty array for null/undefined).
   if (Array.isArray(v)) return v;
   if (v == null) return [];
   return [v];
 }
 function uniqArray<T>(arr: T[]): T[] {
+  //  Return deduplicated array preserving insertion order.
   return Array.from(new Set(arr));
 }
 function mergeValue(oldV: any, newV: any) {
+  //  Merge two values, concatenating arrays and otherwise taking the new value.
   if (Array.isArray(oldV) || Array.isArray(newV)) {
     return uniqArray([...(asArray(oldV)), ...(asArray(newV))]);
   }
-  return newV; // 단순 덮어쓰기
+  return newV;
 }
 
 function cleanupAfterTagRemoval(s: string) {
-  // 1) 제로폭 문자 제거
+  //  Perform whitespace cleanup after inline tags have been removed from the body.
   s = s.replace(/[\u200B-\u200D\uFEFF]/g, '');
-  // 2) 줄 끝 공백 제거
+
   s = s.replace(/[ \t]+$/gm, '');
-  // 3) 3줄 이상 연속 빈 줄 → 2줄로 축약
+
   s = s.replace(/\n{3,}/g, '\n\n');
-  // 4) 파일 끝쪽 공백/빈 줄 정리
+
   s = s.replace(/\s+$/g, '');
   return s;
 }
 
-// === 본문에서 인라인 태그 추출 & 제거 ===
-// - 마크다운 헤더("# 제목")는 건드리지 않음 (# 뒤에 공백이 있으면 무시)
-// - 태그 형식: #tag, #multi-word → 공백/언더바/슬래시는 하이픈 처리(케이스 보존)
-// - 한글/영문/숫자/하이픈/언더스코어/슬래시 허용
 function extractInlineTagsAndStrip(text: string) {
+  //  Find inline tags (e.g., #tag or #한글태그) in the body, collect them, and return the body with tags removed.
+  //  Returns { inlineTags: string[], strippedBody: string }.
   const found: string[] = [];
 
   const TAG_REGEX =
     /(^|(?<=\s)|(?<=[([{:]))#(?!#|\s)((?=[A-Za-z0-9_\-\/\uAC00-\uD7AF]*[A-Za-z\uAC00-\uD7AF])[A-Za-z0-9_\-\/\uAC00-\uD7AF]+)(?=$|[\s,.;:!?)}\]])/gu;
 
   let s = text.replace(TAG_REGEX, (_full, prefix: string, tag: string) => {
-    const norm = formatExistingTag(tag); // 케이스 보존 + 규칙 정리
+    const norm = formatExistingTag(tag);
     if (norm) found.push(norm);
-    return prefix ?? ''; // 태그는 본문에서 완전히 제거
+    return prefix ?? '';
   });
 
-  // ✅ 청소: 제로폭 문자/줄 끝 공백/여분 빈 줄/파일 끝 공백 제거
+  
   s = cleanupAfterTagRemoval(s);
 
-  const unique = Array.from(new Set(found.map(t => t))); // 유지: 케이스 보존
+  const unique = Array.from(new Set(found.map(t => t)));
   return { inlineTags: unique, strippedBody: s };
 }
 
+// === setting ===
 
-
-
-// === 설정 탭 ===
+//  Settings UI tab for configuring API key, model, and language quotas for tags.
 class FMSettingTab extends PluginSettingTab {
   plugin: FrontmatterAutomation;
   constructor(app: App, plugin: FrontmatterAutomation) {
@@ -589,13 +586,13 @@ class FMSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    containerEl.createEl('h3', { text: 'Frontmatter Automation 설정' });
+    containerEl.createEl('h3', { text: 'Frontmatter Automation Settings' });
 
-    // API Base: 읽기 전용 표시 + 버튼 (기본값 적용 / 직접 입력)
+    // API Base
     {
       const row = new Setting(containerEl)
         .setName('API Base')
-        .setDesc('OpenAI 호환 엔드포인트 (기본: https://api.openai.com/v1)');
+        .setDesc('OpenAI-compatible endpoint (default: https://api.openai.com/v1)');
 
       let apiText: import('obsidian').TextComponent;
       row.addText(t => {
@@ -605,26 +602,26 @@ class FMSettingTab extends PluginSettingTab {
       });
 
       row.addButton(b => {
-        b.setButtonText('기본값 적용')
+        b.setButtonText('Reset to default')
           .setCta()
           .onClick(async () => {
             this.plugin.settings.apiBase = 'https://api.openai.com/v1';
             await this.plugin.saveSettings();
             apiText.setValue(this.plugin.settings.apiBase);
-            new Notice('API Base를 기본값으로 설정했습니다.');
+            new Notice('API Base set to default.');
           });
       });
 
       row.addButton(b => {
-        b.setButtonText('직접 입력…')
+        b.setButtonText('Enter manually…')
           .onClick(async () => {
             const cur = this.plugin.settings.apiBase || 'https://api.openai.com/v1';
-            const url = window.prompt('API Base URL을 입력하세요', cur);
+            const url = window.prompt('Enter API Base URL', cur);
             if (url && url.trim()) {
               this.plugin.settings.apiBase = url.trim();
               await this.plugin.saveSettings();
               apiText.setValue(this.plugin.settings.apiBase);
-              new Notice('API Base가 변경되었습니다.');
+              new Notice('API Base updated.');
             }
           });
       });
@@ -633,26 +630,26 @@ class FMSettingTab extends PluginSettingTab {
     // API Key
     new Setting(containerEl)
       .setName('API Key')
-      .setDesc('OpenAI 호환 키 (Bearer)')
+      .setDesc('OpenAI-compatible key (Bearer)')
       .addText(t => t
         .setPlaceholder('sk-...')
         .setValue(this.plugin.settings.apiKey)
         .onChange(async v => { this.plugin.settings.apiKey = v; await this.plugin.saveSettings(); }));
 
-    // Model (OpenAI 계열 프리셋 + 커스텀 입력)
+    // Model
     new Setting(containerEl)
       .setName('Model')
-      .setDesc('OpenAI 호환 모델 선택')
+      .setDesc('Choose OpenAI-compatible model')
       .addDropdown(drop => {
         const presets = ['gpt-4o-mini', 'gpt-4o', 'gpt-4.1-mini', 'gpt-3.5-turbo'];
         for (const m of presets) drop.addOption(m, m);
-        drop.addOption('custom', '직접 입력…');
+        drop.addOption('custom', 'Enter custom…');
 
         const cur = (this.plugin.settings.model || '').trim();
         const optionValues = Array.from((drop as any).selectEl.options).map((o: HTMLOptionElement) => o.value);
 
         if (cur && !optionValues.includes(cur)) {
-          drop.addOption(cur, `(현재) ${cur}`);
+          drop.addOption(cur, `(current) ${cur}`);
           drop.setValue(cur);
         } else if (cur) {
           drop.setValue(cur);
@@ -665,12 +662,12 @@ class FMSettingTab extends PluginSettingTab {
 
         drop.onChange(async (v) => {
           if (v === 'custom') {
-            const name = window.prompt('모델명을 입력하세요', this.plugin.settings.model || 'gpt-4o-mini');
+            const name = window.prompt('Enter model name', this.plugin.settings.model || 'gpt-4o-mini');
             if (name && name.trim()) {
               const val = name.trim();
               this.plugin.settings.model = val;
               const valuesNow = Array.from((drop as any).selectEl.options).map((o: HTMLOptionElement) => o.value);
-              if (!valuesNow.includes(val)) drop.addOption(val, `(현재) ${val}`);
+              if (!valuesNow.includes(val)) drop.addOption(val, `(current) ${val}`);
               drop.setValue(val);
               await this.plugin.saveSettings();
             } else {
@@ -683,12 +680,12 @@ class FMSettingTab extends PluginSettingTab {
         });
       });
 
-    // --- Tags 언어 설정 ---
-    containerEl.createEl('h4', { text: 'Tags 언어 설정' });
+    
+    containerEl.createEl('h4', { text: 'Tags Language Settings' });
 
     for (const entry of this.plugin.settings.tagLangs) {
       const label = TAG_LANG_LABELS[entry.code] ?? entry.code;
-      const row = new Setting(containerEl).setName(label).setDesc('언어별 최대 태그 개수');
+      const row = new Setting(containerEl).setName(label).setDesc('Maximum number of tags for this language');
 
       row.addText(t => {
         t.setPlaceholder('5').setValue(String(entry.max));
@@ -704,7 +701,7 @@ class FMSettingTab extends PluginSettingTab {
       if (entry.code !== 'en') {
         row.addExtraButton(btn => {
           btn.setIcon('trash')
-            .setTooltip('이 언어 제거')
+            .setTooltip('Remove this language')
             .onClick(async () => {
               this.plugin.settings.tagLangs = this.plugin.settings.tagLangs.filter(x => x !== entry);
               await this.plugin.saveSettings();
@@ -715,22 +712,22 @@ class FMSettingTab extends PluginSettingTab {
     }
 
     new Setting(containerEl)
-      .setName('언어 추가')
-      .setDesc('추가할 언어를 선택하고 “추가”를 누르세요')
+      .setName('Add language')
+      .setDesc('Select a language to add and click "Add"')
       .addDropdown(d => {
         const selectedCodes = new Set(this.plugin.settings.tagLangs.map(x => x.code));
         for (const { code, label } of TAG_LANG_CHOICES) {
           if (!selectedCodes.has(code)) d.addOption(code, label);
         }
         if (Object.keys((d as any).selectEl.options).length === 0) {
-          d.addOption('none', '추가할 수 있는 언어가 없습니다');
+          d.addOption('none', 'No languages available to add');
           d.setDisabled(true);
         } else {
           d.setValue('ko');
         }
       })
       .addButton(b => {
-        b.setButtonText('추가').setCta().onClick(async () => {
+        b.setButtonText('Add').setCta().onClick(async () => {
           const dd = (b.buttonEl.parentElement!.querySelector('select') as HTMLSelectElement);
           const code = dd?.value;
           if (!code || code === 'none') return;
