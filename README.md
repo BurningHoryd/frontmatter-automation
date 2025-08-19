@@ -1,94 +1,154 @@
-# Obsidian Sample Plugin
+# Frontmatter Automation
 
-This is a sample plugin for Obsidian (https://obsidian.md).
+An Obsidian plugin that analyzes note content and automatically generates and updates title, summary, and tags in the frontmatter.
+Inline tags (#tag) are extracted from the body, removed, and merged into the frontmatter tags.
+Supports multi-language tagging rules.
 
-This project uses TypeScript to provide type checking and documentation.
-The repo depends on the latest plugin API (obsidian.d.ts) in TypeScript Definition format, which contains TSDoc comments describing what it does.
 
-This sample plugin demonstrates some of the basic functionality the plugin API can do.
-- Adds a ribbon icon, which shows a Notice when clicked.
-- Adds a command "Open Sample Modal" which opens a Modal.
-- Adds a plugin setting tab to the settings page.
-- Registers a global click event and output 'click' to the console.
-- Registers a global interval which logs 'setInterval' to the console.
+## ✨ Features
 
-## First time developing plugins?
+- Generates title and summary
 
-Quick starting guide for new plugin devs:
+- Creates tags per language (with quotas and rules)
 
-- Check if [someone already developed a plugin for what you want](https://obsidian.md/plugins)! There might be an existing plugin similar enough that you can partner up with.
-- Make a copy of this repo as a template with the "Use this template" button (login to GitHub if you don't see it).
-- Clone your repo to a local development folder. For convenience, you can place this folder in your `.obsidian/plugins/your-plugin-name` folder.
-- Install NodeJS, then run `npm i` in the command line under your repo folder.
-- Run `npm run dev` to compile your plugin from `main.ts` to `main.js`.
-- Make changes to `main.ts` (or create new `.ts` files). Those changes should be automatically compiled into `main.js`.
-- Reload Obsidian to load the new version of your plugin.
-- Enable plugin in settings window.
-- For updates to the Obsidian API run `npm update` in the command line under your repo folder.
+- Merges existing frontmatter tags + inline tags + AI tags (duplicates removed)
 
-## Releasing new releases
+- Adds fm_created (today’s date) to indicate when frontmatter was updated
 
-- Update your `manifest.json` with your new version number, such as `1.0.1`, and the minimum Obsidian version required for your latest release.
-- Update your `versions.json` file with `"new-plugin-version": "minimum-obsidian-version"` so older versions of Obsidian can download an older version of your plugin that's compatible.
-- Create new GitHub release using your new version number as the "Tag version". Use the exact version number, don't include a prefix `v`. See here for an example: https://github.com/obsidianmd/obsidian-sample-plugin/releases
-- Upload the files `manifest.json`, `main.js`, `styles.css` as binary attachments. Note: The manifest.json file must be in two places, first the root path of your repository and also in the release.
-- Publish the release.
+- Works with any OpenAI-compatible API endpoint
 
-> You can simplify the version bump process by running `npm version patch`, `npm version minor` or `npm version major` after updating `minAppVersion` manually in `manifest.json`.
-> The command will bump version in `manifest.json` and `package.json`, and add the entry for the new version to `versions.json`
 
-## Adding your plugin to the community plugin list
+## 📦 Installation
 
-- Check the [plugin guidelines](https://docs.obsidian.md/Plugins/Releasing/Plugin+guidelines).
-- Publish an initial version.
-- Make sure you have a `README.md` file in the root of your repo.
-- Make a pull request at https://github.com/obsidianmd/obsidian-releases to add your plugin.
+### Manual installation (development)
 
-## How to use
+Clone this repo into your Obsidian vault’s plugin folder
+Example: <vault>/.obsidian/plugins/frontmatter-automation
 
-- Clone this repo.
-- Make sure your NodeJS is at least v16 (`node --version`).
-- `npm i` or `yarn` to install dependencies.
-- `npm run dev` to start compilation in watch mode.
+Build/compile if needed, then reload plugins in Obsidian.
 
-## Manually installing the plugin
+Enable the plugin in Community plugins.
 
-- Copy over `main.js`, `styles.css`, `manifest.json` to your vault `VaultFolder/.obsidian/plugins/your-plugin-id/`.
+### BRAT installation
 
-## Improve code quality with eslint (optional)
-- [ESLint](https://eslint.org/) is a tool that analyzes your code to quickly find problems. You can run ESLint against your plugin to find common bugs and ways to improve your code. 
-- To use eslint with this project, make sure to install eslint from terminal:
-  - `npm install -g eslint`
-- To use eslint to analyze this project use this command:
-  - `eslint main.ts`
-  - eslint will then create a report with suggestions for code improvement by file and line number.
-- If your source code is in a folder, such as `src`, you can use eslint with this command to analyze all files in that folder:
-  - `eslint .\src\`
+You can also install it via the Obsidian BRAT plugin.
 
-## Funding URL
 
-You can include funding URLs where people who use your plugin can financially support it.
+## ⚙️ Settings
 
-The simple way is to set the `fundingUrl` field to your link in your `manifest.json` file:
+API Base – OpenAI-compatible endpoint. Default: https://api.openai.com/v1
 
+API Key – Bearer token format (sk-...)
+
+Model – Examples: gpt-4o-mini, gpt-4o, gpt-4.1-mini, gpt-3.5-turbo (custom models allowed)
+
+Tags Language Settings – Configure max number of tags per language (e.g., en: 10, ko: 5). Add/remove languages.
+
+
+## 🚀 Usage
+
+Ribbon Button → Click the wand icon in the left ribbon to update the frontmatter for the active note.
+
+Command Palette → Run Frontmatter: Update current note.
+
+
+## 🔍 Workflow
+
+- Split note into frontmatter and body
+
+- Extract inline tags (#tag) from the body
+
+- Clean up the body (remove images, code blocks, length limit)
+
+- Send prompt to LLM (JSON format)
+
+- Receive title, summary, and tags_by_lang
+
+- Merge existing FM tags + inline tags + AI tags (deduped)
+
+- Normalize created / add fm_created
+
+- Write updated frontmatter + cleaned body back to the file
+
+
+## 🧪 Example
+
+Input (body excerpt):
+```md
+# My Note
+This note is about important historical changes in society.
+#history #world
+```
+
+AI Suggested Tags:
 ```json
 {
-    "fundingUrl": "https://buymeacoffee.com"
+  "en": ["CivilRights", "Revolution"],
+  "ko": ["세계역사"]
 }
 ```
 
-If you have multiple URLs, you can also do:
-
-```json
-{
-    "fundingUrl": {
-        "Buy Me a Coffee": "https://buymeacoffee.com",
-        "GitHub Sponsor": "https://github.com/sponsors",
-        "Patreon": "https://www.patreon.com/"
-    }
-}
+Final Output (frontmatter):
+```yaml
+---
+title: My Note
+summary: A short summary generated from the note body.
+tags:
+  - History        # from inline
+  - World          # from inline
+  - CivilRights    # from AI (English tags are normalized to PascalCase)
+  - Revolution     # from AI
+  - 세계역사         # from AI
+created: 2025-08-18
+fm_created: 2025-08-18
+---
 ```
 
-## API Documentation
+## 👉 Note
 
-See https://github.com/obsidianmd/obsidian-api
+Final tags always include inline tags, existing frontmatter tags, and AI-generated tags, with duplicates removed.
+
+English AI tags are normalized to PascalCase (e.g., civil rights → CivilRights) for consistency.
+
+Tags in other languages follow their own formatting rules (e.g., Korean tags are concatenated without spaces).
+
+
+## 🛠 Troubleshooting
+
+“API key not set” → Enter your API key in settings.
+
+AI call failed (HTTP error) → Check API base, model, and API key.
+
+JSON parse failed → Your endpoint may not support response_format: { type: "json_object" }. Remove or adjust.
+
+
+## 🔒 Privacy
+
+This plugin sends note content (with images/code truncated) to the configured LLM endpoint.
+Please review your notes before sending sensitive content.
+
+
+## 📄 License
+
+This project is licensed under the ISC License – see the [LICENSE](./LICENSE) file for details.
+
+Copyright (C) 2025 by BurningHoryd
+
+Permission to use, copy, modify, and/or distribute this software for any purpose with or without fee is hereby granted.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+
+## 🤝 Contributing
+
+Issues and PRs welcome.
+
+Commit messages follow Conventional Commits
+:
+```txt
+feat: add batch update command
+
+fix: handle JSON parse error
+
+refactor: normalize tag formatting
+```
