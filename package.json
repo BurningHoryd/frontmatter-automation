@@ -1,7 +1,7 @@
 {
-	"name": "frontmatter-generator",
-	"version": "1.0.0",
-	"description": "Generates and updates frontmatter (title, summary, and tags) for notes in Obsidian.",
+	"name": "frontmatter-autogen",
+	"version": "1.0.1",
+	"description": "Generates and updates frontmatter (title, summary, and tags) for notes",
 	"main": "main.js",
 	"scripts": {
 		"dev": "node esbuild.config.mjs",
