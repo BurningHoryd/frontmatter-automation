@@ -1,7 +1,7 @@
 {
 	"id": "frontmatter-autogen",
 	"name": "Frontmatter Autogen",
-	"version": "1.0.1",
+	"version": "1.0.0",
 	"minAppVersion": "1.9.10",
 	"description": "Automatically generates and updates frontmatter (title, summary, and tags) for notes.",
 	"author": "BurningHoryd",

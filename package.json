@@ -1,6 +1,6 @@
 {
 	"name": "frontmatter-autogen",
-	"version": "1.0.1",
+	"version": "1.0.0",
 	"description": "Generates and updates frontmatter (title, summary, and tags) for notes",
 	"main": "main.js",
 	"scripts": {
