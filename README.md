@@ -1,4 +1,4 @@
-# Frontmatter Generator
+# Frontmatter Autogen
 
 An Obsidian plugin that analyzes note content and automatically generates and updates title, summary, and tags in the frontmatter.
 Inline tags (#tag) are extracted from the body, removed, and merged into the frontmatter tags.
