@@ -1,4 +1,4 @@
-# Frontmatter Automation
+# Frontmatter Generator
 
 An Obsidian plugin that analyzes note content and automatically generates and updates title, summary, and tags in the frontmatter.
 Inline tags (#tag) are extracted from the body, removed, and merged into the frontmatter tags.
@@ -23,7 +23,7 @@ Supports multi-language tagging rules.
 ### Manual installation (development)
 
 Clone this repo into your Obsidian vault’s plugin folder
-Example: <vault>/.obsidian/plugins/frontmatter-automation
+Example: <vault>/.obsidian/plugins/frontmatter-generator
 
 Build/compile if needed, then reload plugins in Obsidian.
 

@@ -18,6 +18,14 @@
 	],
 	"author": "BurningHoryd",
 	"license": "ISC",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/BurningHoryd/frontmatter-generator.git"
+	},
+	"homepage": "https://github.com/BurningHoryd/frontmatter-generator#readme",
+	"bugs": {
+    "url": "https://github.com/BurningHoryd/frontmatter-generator/issues"
+	},
 	"devDependencies": {
 		"@types/js-yaml": "^4.0.9",
 		"@types/node": "^16.11.6",
