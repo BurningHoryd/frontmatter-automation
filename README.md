@@ -122,10 +122,16 @@ AI call failed (HTTP error) → Check API base, model, and API key.
 JSON parse failed → Your endpoint may not support response_format: { type: "json_object" }. Remove or adjust.
 
 
-## 🔒 Privacy
+## 🔒 Privacy & Network Usage
 
-This plugin sends note content (with images/code truncated) to the configured LLM endpoint.
-Please review your notes before sending sensitive content.
+This plugin requires an API key from [OpenAI](https://platform.openai.com/) or another compatible provider.
+Your notes' content (with images and code truncated) is sent to the configured API endpoint for generating
+titles, summaries, and tags.
+
+- **API Key**: You must provide your own API key in the plugin settings.
+- **Network use**: Note content is transmitted over the internet to the configured endpoint.
+- **Costs**: Depending on your provider’s pricing, using this plugin may incur costs.
+- **Local safety**: Aside from the AI requests, all processing happens locally inside Obsidian.
 
 
 ## 📄 License
