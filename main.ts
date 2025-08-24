@@ -4,9 +4,28 @@ import {
 } from 'obsidian';
 import * as YAML from 'js-yaml';
 
-// Language codes and labels
+/* =========================
+   Types (no 'any' casts)
+   ========================= */
 type TagLang = { code: string; max: number };
 
+// Frontmatter object we manipulate
+type FrontmatterData = Record<string, unknown> & {
+  tags?: string[] | string;
+  title?: string;
+  summary?: string;
+  created?: string | number | Date;
+  fm_created?: string;
+};
+
+// helper: narrow arbitrary value to object
+function isObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null;
+}
+
+/* =========================
+   Language labels/choices
+   ========================= */
 const TAG_LANG_LABELS: Record<string, string> = {
   en: 'English',
   ko: '한국어',
@@ -17,10 +36,12 @@ const TAG_LANG_LABELS: Record<string, string> = {
   fr: 'Français',
 };
 
-const TAG_LANG_CHOICES: Array<{ code: string; label: string }> = Object.entries(TAG_LANG_LABELS)
-  .map(([code, label]) => ({ code, label }));
+const TAG_LANG_CHOICES: Array<{ code: string; label: string }> =
+  Object.entries(TAG_LANG_LABELS).map(([code, label]) => ({ code, label }));
 
-
+/* =========================
+   Settings
+   ========================= */
 interface FMSettings {
   apiKey: string;
   apiBase: string;      // ex) https://api.openai.com/v1
@@ -35,6 +56,9 @@ const DEFAULT_SETTINGS: FMSettings = {
   tagLangs: [{ code: 'en', max: 10 }],
 };
 
+/* =========================
+   Plugin
+   ========================= */
 export default class FrontmatterAutomation extends Plugin {
   settings: FMSettings;
 
@@ -89,62 +113,70 @@ export default class FrontmatterAutomation extends Plugin {
     }
 
     // Expected schema: { title, summary, tags_by_lang: { <code>: string[] } }
-    const tagsByLang: Record<string, string[]> = obj.tags_by_lang ?? {};
+    const tagsByLang: Record<string, string[]> = (obj as Record<string, unknown>).tags_by_lang as Record<string, string[]> ?? {};
     const aiFlatTags = Object.values(tagsByLang).flat().filter(Boolean);
 
     // Merge existing (FM), inline, and AI tags, removing duplicates (case preserved)
     const chosen = new Map<string, string>();
 
-    const addKeepCase = (arr: any[]) => {
+    const addKeepCase = (arr: unknown[]) => {
       for (const t of arr) {
-        const raw = formatExistingTag(String(t ?? ''));
-        const k = tagKey(raw);
-        if (k && !chosen.has(k)) chosen.set(k, raw);
+        const rawTag = formatExistingTag(String(t ?? ''));
+        const k = tagKey(rawTag);
+        if (k && !chosen.has(k)) chosen.set(k, rawTag);
       }
     };
-    const addAi = (arr: any[]) => {
+    const addAi = (arr: unknown[]) => {
       for (const t of arr) {
-        const raw = formatAiTag(String(t ?? ''));
-        const k = tagKey(raw);
-        if (k && !chosen.has(k)) chosen.set(k, raw);
+        const rawTag = formatAiTag(String(t ?? ''));
+        const k = tagKey(rawTag);
+        if (k && !chosen.has(k)) chosen.set(k, rawTag);
       }
     };
 
-    addKeepCase(inlineTags);                 // Inline first
-    addKeepCase(asArray(frontmatter?.tags)); // Then existing FM
-    addAi(aiFlatTags);                       // Last AI
+    addKeepCase(inlineTags);                       // Inline first
+    addKeepCase(asArray(frontmatter?.tags));       // Then existing FM
+    addAi(aiFlatTags);                             // Last AI
 
     const finalTags = Array.from(chosen.values());
 
     // Compose AI-generated fields (tags are merged and overwritten)
-    const generated = {
-      title: obj.title ?? '',
-      summary: obj.summary ?? '',
-    } as Record<string, any>;
+    const generated: Partial<FrontmatterData> = {
+      title: (obj as Record<string, unknown>).title as string ?? '',
+      summary: (obj as Record<string, unknown>).summary as string ?? '',
+    };
 
     // Merge existing (FM) + AI-generated FM
     const merged = this.mergeFrontmatter(frontmatter, generated);
 
     // Final tags overwrite with case preserved
-    (merged as any).tags = finalTags;
+    merged.tags = finalTags;
 
     // Remove unnecessary/forbidden fields
-    delete (merged as any).updated;
-    delete (merged as any).last_modified;
-    delete (merged as any).path;
+    const forbidden = ['updated', 'last_modified', 'path'] as const;
+    for (const k of forbidden) {
+      delete (merged as Record<typeof k, unknown>)[k];
+    }
 
-    // created: if missing, fill with file creation/modification timestamp; if string, normalize to YYYY-MM-DD
-    if (!('created' in merged) || !merged.created) {
+    // created: if missing, fill with file creation/modification timestamp; if string/date/number, normalize to YYYY-MM-DD
+    if (merged.created == null || merged.created === '') {
       const stat = file.stat;
       const baseTs = stat?.ctime ?? stat?.mtime ?? Date.now();
-      (merged as any).created = formatYYYYMMDDLocal(baseTs);
-    } else if (typeof (merged as any).created === 'string') {
-      const dt = new Date((merged as any).created);
-      if (!isNaN(dt.getTime())) (merged as any).created = formatYYYYMMDDLocal(dt);
+      merged.created = formatYYYYMMDDLocal(baseTs);
+    } else {
+      const c = merged.created;
+      if (typeof c === 'string') {
+        const dt = new Date(c);
+        if (!isNaN(dt.getTime())) merged.created = formatYYYYMMDDLocal(dt);
+      } else if (c instanceof Date) {
+        merged.created = formatYYYYMMDDLocal(c);
+      } else if (typeof c === 'number') {
+        merged.created = formatYYYYMMDDLocal(c);
+      }
     }
 
     // fm_created: always record today's date (local)
-    (merged as any).fm_created = formatYYYYMMDDLocal(Date.now());
+    merged.fm_created = formatYYYYMMDDLocal(Date.now());
 
     // Write back to file — use body with tags removed
     const newRaw = this.composeWithFrontmatter(merged, strippedBody);
@@ -152,12 +184,8 @@ export default class FrontmatterAutomation extends Plugin {
     new Notice(`Frontmatter updated: ${file.path}`);
   }
 
-
-
-
-
-  // === Prompt generation ===
-  private buildPrompt(args: { path: string; body: string; existingFM: Record<string, any> | null }) {
+  // === Prompt generation (YAML path, unused in JSON mode but kept) ===
+  private buildPrompt(args: { path: string; body: string; existingFM: FrontmatterData | null }) {
     const { path, body, existingFM } = args;
     const cleanBody = sanitizeBodyForLLM(body, 40000, true);
     const existingYaml = existingFM ? YAML.dump(existingFM).trim() : '(none)';
@@ -191,11 +219,10 @@ export default class FrontmatterAutomation extends Plugin {
     Body (images/code removed/truncated as needed):
     ${cleanBody}
     `.trim();
-
   }
 
   // === JSON prompt generation (recommended path) ===
-  private buildJsonPrompt(args: { path: string; body: string; existingFM: Record<string, any> | null }) {
+  private buildJsonPrompt(args: { path: string; body: string; existingFM: FrontmatterData | null }) {
     const { path, body, existingFM } = args;
     const cleanBody = sanitizeBodyForLLM(body, 40000, true);
     const existingYaml = existingFM ? YAML.dump(existingFM).trim() : '(none)';
@@ -252,10 +279,8 @@ export default class FrontmatterAutomation extends Plugin {
     ].join('\n');
   }
 
-
-
   // === OpenAI-compatible endpoint call (JSON only) ===
-  private async callAIForJSON(prompt: string): Promise<any | null> {
+  private async callAIForJSON(prompt: string): Promise<Record<string, unknown> | null> {
     if (!this.settings.apiKey) {
       new Notice('API key not set. Please enter it in plugin settings.');
       return null;
@@ -294,7 +319,8 @@ export default class FrontmatterAutomation extends Plugin {
     if (!text) return null;
 
     try {
-      return JSON.parse(text);
+      const parsed = JSON.parse(text);
+      return isObject(parsed) ? parsed : null;
     } catch (e) {
       console.error('JSON parse failed:', e, 'original:', text);
       new Notice('Failed to parse AI JSON response');
@@ -302,52 +328,52 @@ export default class FrontmatterAutomation extends Plugin {
     }
   }
 
-
   // === frontmatter split/merge/compose ===
-  private splitFrontmatter(raw: string): { frontmatter: Record<string, any> | null; body: string } {
+  private splitFrontmatter(raw: string): { frontmatter: FrontmatterData | null; body: string } {
     if (raw.startsWith('---')) {
       const end = raw.indexOf('\n---', 3);
       if (end !== -1) {
         const yaml = raw.slice(3, end + 1).trim();
         const body = raw.slice(end + 4).replace(/^\s*\n/, '');
-        const fm = safeLoadYaml(yaml) as Record<string, any> | null;
+        const fmUnknown = safeLoadYaml(yaml);
+        const fm = isObject(fmUnknown) ? (fmUnknown as FrontmatterData) : null;
         return { frontmatter: fm, body };
       }
     }
     return { frontmatter: null, body: raw };
   }
 
-  private composeWithFrontmatter(fm: Record<string, any>, body: string): string {
+  private composeWithFrontmatter(fm: FrontmatterData, body: string): string {
     const yaml = YAML.dump(fm).trimEnd();
     return `---\n${yaml}\n---\n\n${body}`;
   }
 
-  //  Merge existing frontmatter with generated fields. For tags, merge arrays and dedupe.
-  private mergeFrontmatter(oldFM: Record<string, any> | null, genFM: Record<string, any>) {
-    const out: Record<string, any> = { ...(oldFM ?? {}) };
+  // Merge existing frontmatter with generated fields. For tags, merge arrays and dedupe.
+  private mergeFrontmatter(oldFM: FrontmatterData | null, genFM: Partial<FrontmatterData>): FrontmatterData {
+    const out: FrontmatterData = { ...(oldFM ?? {}) };
 
     // Always overwrite + tags merged
     for (const [k, v] of Object.entries(genFM)) {
       if (k === 'tags') {
         out[k] = uniqArray([...(asArray(out[k])), ...(asArray(v))]);
       } else {
-        out[k] = v;
+        (out as Record<string, unknown>)[k] = v as unknown;
       }
     }
 
     // Tag cleanup
     if (out.tags) {
-      out.tags = asArray(out.tags)
-        .map((t: any) => String(t ?? '').trim())
+      const cleaned = asArray(out.tags)
+        .map((t) => String(t ?? '').trim())
         .filter(Boolean)
         .map(t => t.replace(/^#/, ''))
-        .map(t => t.replace(/\s+/g, '-'))
-      out.tags = uniqArray(out.tags);
+        .map(t => t.replace(/\s+/g, '-'));
+      out.tags = uniqArray(cleaned);
     }
 
     return out;
   }
-  
+
   async loadSettings() {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
   }
@@ -356,7 +382,10 @@ export default class FrontmatterAutomation extends Plugin {
   }
 }
 
-// === Utils ===
+/* =========================
+   Utils
+   ========================= */
+
 // Prepare body for LLM:
 function sanitizeBodyForLLM(
   body: string,
@@ -390,7 +419,6 @@ function sanitizeBodyForLLM(
 /** Common tag string cleanup (apply language-specific rules, preserve case) */
 function cleanupBare(s: string) {
   const base = String(s ?? '').trim().replace(/^#/, '');
-  // Simple cycle detection to prevent infinite recursion
   const isKorean  = /[\uAC00-\uD7AF]/.test(base);
   const isEnglish = /^[A-Za-z0-9 _/\-]+$/.test(base) && /[A-Za-z]/.test(base);
 
@@ -406,37 +434,30 @@ function cleanupBare(s: string) {
     .replace(/^-+|-+$/g, '');
 }
 
-
 /** Key for duplicate detection (case-insensitive) */
 function tagKey(s: string) {
   return cleanupBare(s).toLowerCase();
 }
 
-
 function toPascalCaseEnglish(base: string) {
-  //  Convert English-like tokens to PascalCase for AI-generated tags when desired.
+  // Convert English-like tokens to PascalCase for AI-generated tags when desired.
   const splitTokens = base.split(/[ _/\-]+/).filter(Boolean);
   const tokens = splitTokens.length > 0 ? splitTokens : [base];
 
   return tokens
     .map(tok => {
-      
       if (/^[A-Z0-9]+$/.test(tok)) return tok;
       if (/^\d/.test(tok)) return tok;
-      
       if (/[A-Z].*[a-z]|[a-z].*[A-Z]/.test(tok)) {
         return tok.charAt(0).toUpperCase() + tok.slice(1);
       }
-      
       return tok.charAt(0).toUpperCase() + tok.slice(1).toLowerCase();
     })
     .join('');
 }
 
-
 function formatAiTag(s: string) {
-  //  Apply formatting rules for tags that originate from AI output.
-  //  Korean tags are concatenated; English tags are PascalCased; others use hyphens.
+  // Korean tags are concatenated; English tags are PascalCased; others use hyphens.
   const base = String(s ?? '').trim().replace(/^#/, '');
   const isKorean  = /[\uAC00-\uD7AF]/.test(base);
   const isEnglish = /^[A-Za-z0-9 _/\-]+$/.test(base) && /[A-Za-z]/.test(base);
@@ -447,37 +468,33 @@ function formatAiTag(s: string) {
   if (isEnglish) {
     return toPascalCaseEnglish(base);
   }
-  
+
   return base
     .replace(/[ _/]+/g, '-')
     .replace(/-{2,}/g, '-')
     .replace(/^-+|-+$/g, '');
 }
 
-
 function formatExistingTag(s: string) {
-  //  Apply conservative cleanup to user-provided or existing tags (preserve case for many languages).
+  // Conservative cleanup for user/existing tags
   return cleanupBare(s);
 }
 
 function normalizeTag(s: string) {
-  //  Alias for cleanupBare; retains the same behavior.
   return cleanupBare(s);
 }
 
 function isEnglishTag(tag: string) {
-  //  Heuristic check whether a tag is "English-like" (ASCII letters/numbers with separators).
   const s = String(tag).trim();
   const normalized = s.replace(/[ _/]+/g, '-');
   return /^[A-Za-z0-9-]+$/.test(normalized);
 }
 
 function hasKorean(tag: string) {
-  //  Simple detection for Hangul characters.
   return /[\uAC00-\uD7AF]/.test(tag);
 }
+
 function detectTagLang(tag: string): string {
-  //  Detect language code for a tag: 'ko' for Korean, 'en' for English-like, otherwise 'other'.
   const s = String(tag).trim();
   if (/[\uAC00-\uD7AF]/.test(s)) return 'ko';
   if (isEnglishTag(s)) return 'en';
@@ -485,7 +502,7 @@ function detectTagLang(tag: string): string {
 }
 
 function enforceTagQuotas(allTags: string[], tagLangs: Array<{code:string; max:number}>) {
-  //  Pick tags while respecting per-language quotas. Uses normalized form for uniqueness.
+  // Pick tags while respecting per-language quotas. Uses normalized form for uniqueness.
   const clean = Array.from(new Set(allTags.map(t => formatExistingTag(t)).filter(Boolean)));
   const allowed = new Map(tagLangs.map(x => [x.code, x.max]));
   const picked: string[] = [];
@@ -505,7 +522,6 @@ function enforceTagQuotas(allTags: string[], tagLangs: Array<{code:string; max:n
 }
 
 function formatYYYYMMDDLocal(ts: number | Date) {
-  //  Format a timestamp as YYYY-MM-DD using local date values.
   const d = ts instanceof Date ? ts : new Date(ts);
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
@@ -513,26 +529,25 @@ function formatYYYYMMDDLocal(ts: number | Date) {
   return `${y}-${m}-${day}`;
 }
 
-function safeLoadYaml(y: string): any {
-  //  Load YAML safely, returning null on parse errors.
+function safeLoadYaml(y: string): unknown {
   try { return YAML.load(y); } catch { return null; }
 }
+
 function stripCodeFences(s: string) {
-  //  Helper to remove code fence markers.
   return s.replace(/^```[a-zA-Z]*\n?/, '').replace(/\n?```$/, '');
 }
-function asArray(v: any): any[] {
-  //  Ensure value is always returned as an array (empty array for null/undefined).
+
+function asArray(v: unknown): unknown[] {
   if (Array.isArray(v)) return v;
   if (v == null) return [];
   return [v];
 }
+
 function uniqArray<T>(arr: T[]): T[] {
-  //  Return deduplicated array preserving insertion order.
   return Array.from(new Set(arr));
 }
-function mergeValue(oldV: any, newV: any) {
-  //  Merge two values, concatenating arrays and otherwise taking the new value.
+
+function mergeValue(oldV: unknown, newV: unknown) {
   if (Array.isArray(oldV) || Array.isArray(newV)) {
     return uniqArray([...(asArray(oldV)), ...(asArray(newV))]);
   }
@@ -540,24 +555,20 @@ function mergeValue(oldV: any, newV: any) {
 }
 
 function cleanupAfterTagRemoval(s: string) {
-  //  Perform whitespace cleanup after inline tags have been removed from the body.
   s = s.replace(/[\u200B-\u200D\uFEFF]/g, '');
-
   s = s.replace(/[ \t]+$/gm, '');
-
   s = s.replace(/\n{3,}/g, '\n\n');
-
   s = s.replace(/\s+$/g, '');
   return s;
 }
 
 function extractInlineTagsAndStrip(text: string) {
-  //  Find inline tags (e.g., #tag or #한글태그) in the body, collect them, and return the body with tags removed.
-  //  Returns { inlineTags: string[], strippedBody: string }.
+  // Find inline tags and strip them from body.
   const found: string[] = [];
 
+  // Lookbehind-free regex; capture prefix in group1 and tag body in group2
   const TAG_REGEX =
-    /(^|(?<=\s)|(?<=[([{:]))#(?!#|\s)((?=[A-Za-z0-9_\-\/\uAC00-\uD7AF]*[A-Za-z\uAC00-\uD7AF])[A-Za-z0-9_\-\/\uAC00-\uD7AF]+)(?=$|[\s,.;:!?)}\]])/gu;
+    /(^|[\s(\[{:])#(?!#|\s)((?=[A-Za-z0-9_\-\/\uAC00-\uD7AF]*[A-Za-z\uAC00-\uD7AF])[A-Za-z0-9_\-\/\uAC00-\uD7AF]+)(?=$|[\s,.;:!?)}\]])/gu;
 
   let s = text.replace(TAG_REGEX, (_full, prefix: string, tag: string) => {
     const norm = formatExistingTag(tag);
@@ -565,16 +576,15 @@ function extractInlineTagsAndStrip(text: string) {
     return prefix ?? '';
   });
 
-  
   s = cleanupAfterTagRemoval(s);
 
   const unique = Array.from(new Set(found.map(t => t)));
   return { inlineTags: unique, strippedBody: s };
 }
 
-// === setting ===
-
-//  Settings UI tab for configuring API key, model, and language quotas for tags.
+/* =========================
+   Settings UI
+   ========================= */
 class FMSettingTab extends PluginSettingTab {
   plugin: FrontmatterAutomation;
   constructor(app: App, plugin: FrontmatterAutomation) {
@@ -646,7 +656,10 @@ class FMSettingTab extends PluginSettingTab {
         drop.addOption('custom', 'Enter custom…');
 
         const cur = (this.plugin.settings.model || '').trim();
-        const optionValues = Array.from((drop as any).selectEl.options).map((o: HTMLOptionElement) => o.value);
+
+        // Access internal selectEl without 'any'
+        const selectEl = (drop as unknown as { selectEl: HTMLSelectElement }).selectEl;
+        const optionValues = Array.from(selectEl.options).map((o) => o.value);
 
         if (cur && !optionValues.includes(cur)) {
           drop.addOption(cur, `(current) ${cur}`);
@@ -666,7 +679,8 @@ class FMSettingTab extends PluginSettingTab {
             if (name && name.trim()) {
               const val = name.trim();
               this.plugin.settings.model = val;
-              const valuesNow = Array.from((drop as any).selectEl.options).map((o: HTMLOptionElement) => o.value);
+              const selectEl2 = (drop as unknown as { selectEl: HTMLSelectElement }).selectEl;
+              const valuesNow = Array.from(selectEl2.options).map((o) => o.value);
               if (!valuesNow.includes(val)) drop.addOption(val, `(current) ${val}`);
               drop.setValue(val);
               await this.plugin.saveSettings();
@@ -680,7 +694,6 @@ class FMSettingTab extends PluginSettingTab {
         });
       });
 
-    
     containerEl.createEl('h4', { text: 'Tags Language Settings' });
 
     for (const entry of this.plugin.settings.tagLangs) {
@@ -689,8 +702,8 @@ class FMSettingTab extends PluginSettingTab {
 
       row.addText(t => {
         t.setPlaceholder('5').setValue(String(entry.max));
-        t.inputEl.type = 'number';
-        t.inputEl.min = '0';
+        (t.inputEl as HTMLInputElement).type = 'number';
+        (t.inputEl as HTMLInputElement).min = '0';
         t.onChange(async v => {
           const n = Math.max(0, Number.isFinite(+v) ? parseInt(v, 10) : entry.max);
           entry.max = n;
@@ -719,7 +732,8 @@ class FMSettingTab extends PluginSettingTab {
         for (const { code, label } of TAG_LANG_CHOICES) {
           if (!selectedCodes.has(code)) d.addOption(code, label);
         }
-        if (Object.keys((d as any).selectEl.options).length === 0) {
+        const selectEl = (d as unknown as { selectEl: HTMLSelectElement }).selectEl;
+        if (selectEl.options.length === 0) {
           d.addOption('none', 'No languages available to add');
           d.setDisabled(true);
         } else {
@@ -741,4 +755,3 @@ class FMSettingTab extends PluginSettingTab {
       });
   }
 }
-
