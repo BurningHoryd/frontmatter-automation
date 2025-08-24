@@ -66,14 +66,14 @@ export default class FrontmatterAutomation extends Plugin {
     await this.loadSettings();
 
     // Ribbon button
-    this.addRibbonIcon('wand-2', 'Frontmatter: Update current note', async () => {
+    this.addRibbonIcon('wand-2', 'Frontmatter: update current note', async () => {
       await this.processCurrentNote();
     });
 
     // Command - Update Current Note
     this.addCommand({
       id: 'fm-update-current-note',
-      name: 'Frontmatter: Update current note',
+      name: 'Frontmatter: update current note',
       callback: async () => this.processCurrentNote(),
     });
 
@@ -91,32 +91,33 @@ export default class FrontmatterAutomation extends Plugin {
   }
 
   private async updateFrontmatterForFile(file: TFile) {
-    // Read original file and split frontmatter/body
+    // 1) Read raw file and split into frontmatter/body (FM is only used as reference for prompt)
     const raw = await this.app.vault.read(file);
     const { frontmatter, body } = this.splitFrontmatter(raw);
 
-    // Extract inline tags from body & remove them
+    // 2) Extract inline tags from the body and remove them
     const { inlineTags, strippedBody } = extractInlineTagsAndStrip(body);
 
-    // AI prompt generation — JSON format
+    // 3) Build JSON prompt (existing FM used as reference only)
     const jsonPrompt = this.buildJsonPrompt({
       path: file.path,
       body: strippedBody,
       existingFM: frontmatter,
     });
 
-    // AI call (JSON)
+    // 4) Call LLM → expected { title, summary, tags_by_lang }
     const obj = await this.callAIForJSON(jsonPrompt);
     if (!obj || typeof obj !== 'object') {
       new Notice(`Did not receive JSON from AI: ${file.path}`);
       return;
     }
 
-    // Expected schema: { title, summary, tags_by_lang: { <code>: string[] } }
-    const tagsByLang: Record<string, string[]> = (obj as Record<string, unknown>).tags_by_lang as Record<string, string[]> ?? {};
+    // Flatten tags_by_lang into one array
+    const tagsByLang: Record<string, string[]> =
+      (obj as Record<string, unknown>).tags_by_lang as Record<string, string[]> ?? {};
     const aiFlatTags = Object.values(tagsByLang).flat().filter(Boolean);
 
-    // Merge existing (FM), inline, and AI tags, removing duplicates (case preserved)
+    // 5) Tag merge order: inline → existing FM → AI (dedupe, preserve case)
     const chosen = new Map<string, string>();
 
     const addKeepCase = (arr: unknown[]) => {
@@ -134,55 +135,76 @@ export default class FrontmatterAutomation extends Plugin {
       }
     };
 
-    addKeepCase(inlineTags);                       // Inline first
+    addKeepCase(inlineTags);                       // Inline tags first
     addKeepCase(asArray(frontmatter?.tags));       // Then existing FM
-    addAi(aiFlatTags);                             // Last AI
-
+    addAi(aiFlatTags);                             // Finally AI tags
     const finalTags = Array.from(chosen.values());
 
-    // Compose AI-generated fields (tags are merged and overwritten)
-    const generated: Partial<FrontmatterData> = {
-      title: (obj as Record<string, unknown>).title as string ?? '',
-      summary: (obj as Record<string, unknown>).summary as string ?? '',
-    };
+    // 6) FRONTMATTER FIRST: update FM atomically (leave `created` untouched if present)
+    await this.app.fileManager.processFrontMatter(file, (fm) => {
+      // title/summary: overwrite if provided by AI
+      const t = (obj as Record<string, unknown>).title;
+      const s = (obj as Record<string, unknown>).summary;
+      if (typeof t === 'string') fm.title = t;
+      if (typeof s === 'string') fm.summary = s;
 
-    // Merge existing (FM) + AI-generated FM
-    const merged = this.mergeFrontmatter(frontmatter, generated);
+      const existing = Array.isArray(fm.tags) ? fm.tags : (typeof fm.tags !== 'undefined' ? [fm.tags] : []);
+      const mergedOnce = Array.from(new Set([
+        ...existing.map((v: unknown) => String(v ?? '')),
+        ...finalTags.map((v: string) => String(v ?? '')),
+      ]))
+        .filter(Boolean)
+        .map(x => x.replace(/^#/, ''))
+        .map(x => x.replace(/\s+/g, '-'));
 
-    // Final tags overwrite with case preserved
-    merged.tags = finalTags;
+      fm.tags = Array.from(new Set(mergedOnce));
 
-    // Remove unnecessary/forbidden fields
-    const forbidden = ['updated', 'last_modified', 'path'] as const;
-    for (const k of forbidden) {
-      delete (merged as Record<typeof k, unknown>)[k];
-    }
+      // Remove unnecessary/forbidden fields
+      const g = fm as { [k: string]: unknown };
+      delete g['updated'];
+      delete g['last_modified'];
+      delete g['path'];
 
-    // created: if missing, fill with file creation/modification timestamp; if string/date/number, normalize to YYYY-MM-DD
-    if (merged.created == null || merged.created === '') {
-      const stat = file.stat;
-      const baseTs = stat?.ctime ?? stat?.mtime ?? Date.now();
-      merged.created = formatYYYYMMDDLocal(baseTs);
-    } else {
-      const c = merged.created;
-      if (typeof c === 'string') {
-        const dt = new Date(c);
-        if (!isNaN(dt.getTime())) merged.created = formatYYYYMMDDLocal(dt);
-      } else if (c instanceof Date) {
-        merged.created = formatYYYYMMDDLocal(c);
-      } else if (typeof c === 'number') {
-        merged.created = formatYYYYMMDDLocal(c);
+      // ✅ created: only fill when missing; DO NOT touch existing values (prevents off-by-one)
+      if (fm.created == null || fm.created === '') {
+        const stat = file.stat;
+        const baseTs = stat?.ctime ?? stat?.mtime ?? Date.now();
+        fm.created = formatYYYYMMDDLocal(baseTs);  // 'YYYY-MM-DD'
+      }
+
+      // fm_created: always record today's date (local)
+      fm.fm_created = formatYYYYMMDDLocal(Date.now());
+    });
+
+    // 7) BODY SECOND: replace ONLY the body while preserving the FM text exactly
+    {
+      const latestRaw = await this.app.vault.read(file);
+      let newContent = strippedBody;
+
+      if (latestRaw.startsWith('---')) {
+        const end = latestRaw.indexOf('\n---', 3);
+        if (end !== -1) {
+          const fmBlock = latestRaw.slice(0, end + 4); // includes the closing '---'
+          // keep FM block AS-IS, only replace the body with strippedBody
+          newContent = `${fmBlock}\n\n${strippedBody}`;
+        }
+      }
+
+      const active = this.app.workspace.activeEditor?.editor;
+      const activeFile = this.app.workspace.getActiveFile();
+
+      if (active && activeFile && activeFile.path === file.path) {
+        const cur = active.getValue();
+        if (cur !== newContent) active.setValue(newContent);     // preserve cursor/folds
+      } else {
+        await this.app.vault.process(file, () => newContent);     // atomic background update
       }
     }
 
-    // fm_created: always record today's date (local)
-    merged.fm_created = formatYYYYMMDDLocal(Date.now());
-
-    // Write back to file — use body with tags removed
-    const newRaw = this.composeWithFrontmatter(merged, strippedBody);
-    await this.app.vault.modify(file, newRaw);
     new Notice(`Frontmatter updated: ${file.path}`);
   }
+
+
 
   // === Prompt generation (YAML path, unused in JSON mode but kept) ===
   private buildPrompt(args: { path: string; body: string; existingFM: FrontmatterData | null }) {
@@ -343,37 +365,6 @@ export default class FrontmatterAutomation extends Plugin {
     return { frontmatter: null, body: raw };
   }
 
-  private composeWithFrontmatter(fm: FrontmatterData, body: string): string {
-    const yaml = YAML.dump(fm).trimEnd();
-    return `---\n${yaml}\n---\n\n${body}`;
-  }
-
-  // Merge existing frontmatter with generated fields. For tags, merge arrays and dedupe.
-  private mergeFrontmatter(oldFM: FrontmatterData | null, genFM: Partial<FrontmatterData>): FrontmatterData {
-    const out: FrontmatterData = { ...(oldFM ?? {}) };
-
-    // Always overwrite + tags merged
-    for (const [k, v] of Object.entries(genFM)) {
-      if (k === 'tags') {
-        out[k] = uniqArray([...(asArray(out[k])), ...(asArray(v))]);
-      } else {
-        (out as Record<string, unknown>)[k] = v as unknown;
-      }
-    }
-
-    // Tag cleanup
-    if (out.tags) {
-      const cleaned = asArray(out.tags)
-        .map((t) => String(t ?? '').trim())
-        .filter(Boolean)
-        .map(t => t.replace(/^#/, ''))
-        .map(t => t.replace(/\s+/g, '-'));
-      out.tags = uniqArray(cleaned);
-    }
-
-    return out;
-  }
-
   async loadSettings() {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
   }
@@ -480,47 +471,6 @@ function formatExistingTag(s: string) {
   return cleanupBare(s);
 }
 
-function normalizeTag(s: string) {
-  return cleanupBare(s);
-}
-
-function isEnglishTag(tag: string) {
-  const s = String(tag).trim();
-  const normalized = s.replace(/[ _/]+/g, '-');
-  return /^[A-Za-z0-9-]+$/.test(normalized);
-}
-
-function hasKorean(tag: string) {
-  return /[\uAC00-\uD7AF]/.test(tag);
-}
-
-function detectTagLang(tag: string): string {
-  const s = String(tag).trim();
-  if (/[\uAC00-\uD7AF]/.test(s)) return 'ko';
-  if (isEnglishTag(s)) return 'en';
-  return 'other';
-}
-
-function enforceTagQuotas(allTags: string[], tagLangs: Array<{code:string; max:number}>) {
-  // Pick tags while respecting per-language quotas. Uses normalized form for uniqueness.
-  const clean = Array.from(new Set(allTags.map(t => formatExistingTag(t)).filter(Boolean)));
-  const allowed = new Map(tagLangs.map(x => [x.code, x.max]));
-  const picked: string[] = [];
-  const counts = new Map<string, number>();
-
-  for (const tag of clean) {
-    const lang = detectTagLang(tag);
-    if (!allowed.has(lang)) continue;
-    const used = counts.get(lang) ?? 0;
-    const limit = allowed.get(lang)!;
-    if (used < limit) {
-      picked.push(tag);
-      counts.set(lang, used + 1);
-    }
-  }
-  return picked;
-}
-
 function formatYYYYMMDDLocal(ts: number | Date) {
   const d = ts instanceof Date ? ts : new Date(ts);
   const y = d.getFullYear();
@@ -547,12 +497,6 @@ function uniqArray<T>(arr: T[]): T[] {
   return Array.from(new Set(arr));
 }
 
-function mergeValue(oldV: unknown, newV: unknown) {
-  if (Array.isArray(oldV) || Array.isArray(newV)) {
-    return uniqArray([...(asArray(oldV)), ...(asArray(newV))]);
-  }
-  return newV;
-}
 
 function cleanupAfterTagRemoval(s: string) {
   s = s.replace(/[\u200B-\u200D\uFEFF]/g, '');
@@ -596,12 +540,12 @@ class FMSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    containerEl.createEl('h3', { text: 'Frontmatter Automation Settings' });
+    new Setting(containerEl).setName('API').setHeading();
 
     // API Base
     {
       const row = new Setting(containerEl)
-        .setName('API Base')
+        .setName('API base')
         .setDesc('OpenAI-compatible endpoint (default: https://api.openai.com/v1)');
 
       let apiText: import('obsidian').TextComponent;
@@ -639,7 +583,7 @@ class FMSettingTab extends PluginSettingTab {
 
     // API Key
     new Setting(containerEl)
-      .setName('API Key')
+      .setName('API key')
       .setDesc('OpenAI-compatible key (Bearer)')
       .addText(t => t
         .setPlaceholder('sk-...')
@@ -694,7 +638,8 @@ class FMSettingTab extends PluginSettingTab {
         });
       });
 
-    containerEl.createEl('h4', { text: 'Tags Language Settings' });
+    new Setting(containerEl).setName('Tags language').setHeading();
+
 
     for (const entry of this.plugin.settings.tagLangs) {
       const label = TAG_LANG_LABELS[entry.code] ?? entry.code;
